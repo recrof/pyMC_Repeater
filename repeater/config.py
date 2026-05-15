@@ -375,7 +375,7 @@ def get_radio_for_board(board_config: dict):
             "bandwidth": int(radio_config["bandwidth"]),
             "coding_rate": radio_config["coding_rate"],
             "preamble_length": radio_config["preamble_length"],
-            "sync_word": radio_config["sync_word"],
+            "sync_word": _parse_int(radio_config.get("sync_word", 0x12)),
         }
 
         en_pin = _parse_int(spi_config.get("en_pin"), default=None)

@@ -317,13 +317,18 @@ class APIEndpoints:
             )
             has_default_password = admin_password in ["admin123", ""]
 
-            needs_setup = has_default_name or has_default_password
+            radio_type_raw = config.get("radio_type")
+            radio_type = "" if radio_type_raw is None else str(radio_type_raw).lower().strip()
+            radio_not_configured = radio_type in ("", "none", "null", "disabled", "off", "no_radio")
+
+            needs_setup = has_default_name or has_default_password or radio_not_configured
 
             return {
                 "needs_setup": needs_setup,
                 "reasons": {
                     "default_name": has_default_name,
                     "default_password": has_default_password,
+                    "radio_not_configured": radio_not_configured,
                 },
             }
         except Exception as e:
@@ -359,16 +364,6 @@ class APIEndpoints:
                                 "config": hw_config,
                             }
                         )
-
-            # Add MeshCore KISS modem option (serial TNC)
-            hardware_list.append(
-                {
-                    "key": "kiss",
-                    "name": "KISS modem (serial)",
-                    "description": "MeshCore KISS modem over serial – requires pyMC_core with KISS support",
-                    "config": {},
-                }
-            )
 
             return {"hardware": hardware_list}
         except Exception as e:
@@ -491,6 +486,49 @@ class APIEndpoints:
                 config_yaml["radio"]["tx_power"] = int(radio_preset.get("tx_power", 14))
                 if "preamble_length" not in config_yaml["radio"]:
                     config_yaml["radio"]["preamble_length"] = 17
+            elif hardware_key == "pymc_usb":
+                # pymc_usb modem: external SX1262 board over USB-CDC.
+                # Accept pymc_usb_port / pymc_usb_baudrate from the request body
+                # (mirrors the KISS pattern) so a future SPA can expose inputs;
+                # fall back to /dev/ttyACM0 at 921600 baud, which matches the
+                # firmware default and the typical USB-CDC modem device on Linux.
+                config_yaml["radio_type"] = "pymc_usb"
+                usb_port = (data.get("pymc_usb_port") or "").strip() or "/dev/ttyACM0"
+                usb_baud = int(data.get("pymc_usb_baudrate", data.get("pymc_usb_baud", 921600)))
+                pymc_usb_section = config_yaml.setdefault("pymc_usb", {})
+                pymc_usb_section["port"] = usb_port
+                pymc_usb_section["baudrate"] = usb_baud
+                pymc_usb_section.setdefault("lbt_enabled", True)
+                pymc_usb_section.setdefault("lbt_max_attempts", 5)
+                if "tx_power" in hw_config:
+                    config_yaml["radio"]["tx_power"] = hw_config.get("tx_power", 22)
+                if "preamble_length" in hw_config:
+                    config_yaml["radio"]["preamble_length"] = hw_config.get("preamble_length", 16)
+            elif hardware_key == "pymc_tcp":
+                # pymc_tcp modem: external SX1262 board exposed as TCP over Wi-Fi/Ethernet.
+                # 'host' has no sensible default — must be the modem's LAN address or
+                # mDNS name. Accept it from the request body if the SPA provides it,
+                # otherwise write a clearly-placeholder hostname so the file is valid
+                # YAML and the user gets a startup error pointing them at the right
+                # section to edit (see config.py: ValueError 'Missing host …').
+                config_yaml["radio_type"] = "pymc_tcp"
+                tcp_host = (data.get("pymc_tcp_host") or "").strip() or "REPLACE_WITH_MODEM_HOST"
+                tcp_port = int(data.get("pymc_tcp_port", 5055))
+                pymc_tcp_section = config_yaml.setdefault("pymc_tcp", {})
+                pymc_tcp_section["host"] = tcp_host
+                pymc_tcp_section["port"] = tcp_port
+                tcp_token = data.get("pymc_tcp_token")
+                if tcp_token is not None:
+                    pymc_tcp_section["token"] = str(tcp_token)
+                else:
+                    pymc_tcp_section.setdefault("token", "")
+                pymc_tcp_section.setdefault("connect_timeout", 5.0)
+                pymc_tcp_section.setdefault("lbt_enabled", True)
+                pymc_tcp_section.setdefault("lbt_max_attempts", 5)
+                if "tx_power" in hw_config:
+                    config_yaml["radio"]["tx_power"] = hw_config.get("tx_power", 22)
+                if "preamble_length" in hw_config:
+                    config_yaml["radio"]["preamble_length"] = hw_config.get("preamble_length", 16)
             else:
                 # SX1262 / sx1262_ch341: radio_type and optional CH341 from hw_config
                 if "radio_type" in hw_config:
@@ -577,7 +615,7 @@ class APIEndpoints:
             result_config = {
                 "node_name": node_name,
                 "hardware": hardware_key,
-                "radio_type": config_yaml.get("radio_type", "sx1262"),
+                "radio_type": config_yaml.get("radio_type"),
                 "frequency": freq_mhz,
                 "spreading_factor": radio_preset.get("spreading_factor"),
                 "bandwidth": radio_preset.get("bandwidth"),
@@ -586,6 +624,15 @@ class APIEndpoints:
             if hardware_key == "kiss":
                 result_config["kiss_port"] = config_yaml.get("kiss", {}).get("port")
                 result_config["kiss_baud_rate"] = config_yaml.get("kiss", {}).get("baud_rate")
+            elif hardware_key == "pymc_usb":
+                pymc_usb_cfg = config_yaml.get("pymc_usb", {})
+                result_config["pymc_usb_port"] = pymc_usb_cfg.get("port")
+                result_config["pymc_usb_baudrate"] = pymc_usb_cfg.get("baudrate")
+            elif hardware_key == "pymc_tcp":
+                pymc_tcp_cfg = config_yaml.get("pymc_tcp", {})
+                result_config["pymc_tcp_host"] = pymc_tcp_cfg.get("host")
+                result_config["pymc_tcp_port"] = pymc_tcp_cfg.get("port")
+                # token deliberately omitted from response (sensitive)
             return {
                 "success": True,
                 "message": "Setup completed successfully. Service is restarting...",

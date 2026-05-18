@@ -365,16 +365,6 @@ class APIEndpoints:
                             }
                         )
 
-            # Add MeshCore KISS modem option (serial TNC)
-            hardware_list.append(
-                {
-                    "key": "kiss",
-                    "name": "KISS modem (serial)",
-                    "description": "MeshCore KISS modem over serial – requires pyMC_core with KISS support",
-                    "config": {},
-                }
-            )
-
             return {"hardware": hardware_list}
         except Exception as e:
             logger.error(f"Error loading hardware options: {e}")

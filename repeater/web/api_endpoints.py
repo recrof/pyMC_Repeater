@@ -297,6 +297,25 @@ class APIEndpoints:
         values = [v if v is not None else 0 for v in data_points]
         return [[timestamps_ms[i], values[i]] for i in range(min(len(values), len(timestamps_ms)))]
 
+    def _setup_status_from_config(self, config: dict) -> tuple[bool, dict]:
+        """Return whether first-run setup should still be available."""
+        node_name = config.get("repeater", {}).get("node_name", "")
+        has_default_name = node_name in ["mesh-repeater-01", ""]
+
+        admin_password = config.get("repeater", {}).get("security", {}).get("admin_password", "")
+        has_default_password = admin_password in ["admin123", ""]
+
+        radio_type_raw = config.get("radio_type")
+        radio_type = "" if radio_type_raw is None else str(radio_type_raw).lower().strip()
+        radio_not_configured = radio_type in ("", "none", "null", "disabled", "off", "no_radio")
+
+        reasons = {
+            "default_name": has_default_name,
+            "default_password": has_default_password,
+            "radio_not_configured": radio_not_configured,
+        }
+        return has_default_name or has_default_password or radio_not_configured, reasons
+
     # ============================================================================
     # SETUP WIZARD ENDPOINTS
     # ============================================================================
@@ -306,30 +325,22 @@ class APIEndpoints:
     def needs_setup(self):
         """Check if the repeater needs initial setup configuration"""
         try:
+            # Prefer the on-disk config so this reflects current persisted state.
+            import yaml
+
             config = self.config
+            try:
+                with open(self._config_path, "r") as f:
+                    config = yaml.safe_load(f) or {}
+            except Exception:
+                # Fall back to in-memory config if file cannot be read.
+                pass
 
-            # Check for default values that indicate first-time setup
-            node_name = config.get("repeater", {}).get("node_name", "")
-            has_default_name = node_name in ["mesh-repeater-01", ""]
-
-            admin_password = (
-                config.get("repeater", {}).get("security", {}).get("admin_password", "")
-            )
-            has_default_password = admin_password in ["admin123", ""]
-
-            radio_type_raw = config.get("radio_type")
-            radio_type = "" if radio_type_raw is None else str(radio_type_raw).lower().strip()
-            radio_not_configured = radio_type in ("", "none", "null", "disabled", "off", "no_radio")
-
-            needs_setup = has_default_name or has_default_password or radio_not_configured
+            needs_setup, reasons = self._setup_status_from_config(config)
 
             return {
                 "needs_setup": needs_setup,
-                "reasons": {
-                    "default_name": has_default_name,
-                    "default_password": has_default_password,
-                    "radio_not_configured": radio_not_configured,
-                },
+                "reasons": reasons,
             }
         except Exception as e:
             logger.error(f"Error checking setup status: {e}")
@@ -412,6 +423,24 @@ class APIEndpoints:
             self._require_post()
             data = cherrypy.request.json
 
+            import yaml
+
+            # Setup wizard is first-run only. After setup, use /auth/change_password
+            # and /api/update_radio_config for subsequent changes.
+            try:
+                with open(self._config_path, "r") as f:
+                    current_config = yaml.safe_load(f) or {}
+            except Exception:
+                current_config = self.config or {}
+
+            needs_setup, _ = self._setup_status_from_config(current_config)
+            if not needs_setup:
+                cherrypy.response.status = 403
+                return {
+                    "success": False,
+                    "error": "Setup is already complete. Use authenticated endpoints for configuration changes.",
+                }
+
             # Validate required fields
             node_name = data.get("node_name", "").strip()
             if not node_name:
@@ -451,8 +480,6 @@ class APIEndpoints:
                     return {"success": False, "error": f"Hardware configuration not found: {hardware_key}"}
             else:
                 hw_config = {}
-
-            import yaml
 
             # Read current config first so we can update it
             with open(self._config_path, "r") as f:

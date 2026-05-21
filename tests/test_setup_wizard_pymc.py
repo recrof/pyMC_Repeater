@@ -206,3 +206,29 @@ def test_wizard_kiss_branch_unchanged(wizard_env, tmp_path):
     assert written["radio_type"] == "kiss"
     assert written["kiss"]["port"] == "/dev/ttyUSB0"
     assert written["kiss"]["baud_rate"] == 115200
+
+
+def test_wizard_rejected_after_setup_complete(wizard_env):
+    """setup_wizard should be first-run only once config is already initialized."""
+    tmp_path, config_path, endpoints, set_request = wizard_env
+
+    configured = {
+        "repeater": {"node_name": "already-set", "security": {"admin_password": "verysecret"}},
+        "radio_type": "pymc_tcp",
+        "radio": {
+            "frequency": 869618000,
+            "spreading_factor": 8,
+            "bandwidth": 62500,
+            "coding_rate": 8,
+        },
+    }
+    with open(config_path, "w") as f:
+        yaml.safe_dump(configured, f)
+
+    body = dict(_BASE_REQUEST, hardware_key="pymc_tcp", pymc_tcp_host="modem.local")
+    set_request(body)
+
+    result = endpoints.setup_wizard()
+
+    assert result["success"] is False
+    assert "already complete" in result["error"].lower()

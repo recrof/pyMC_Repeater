@@ -21,7 +21,8 @@ ENV INSTALL_DIR=/opt/pymc_repeater \
 # Install runtime dependencies only
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     libffi-dev \
-    python3-rrdtool \
+    librrd-dev \
+    pkg-config \
     jq \
     wget \
     libusb-1.0-0 \
@@ -64,7 +65,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 USER ${USER}
 
 # Install package
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[rrd]"
 
 USER root
 

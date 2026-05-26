@@ -12,6 +12,9 @@ def _make_api(config=None):
     api = APIEndpoints.__new__(APIEndpoints)
     api.config = config or {}
     api.daemon_instance = None
+    api.send_advert_func = None
+    api.event_loop = None
+    api.stats_getter = None
     api._config_path = "/tmp/test-config.yaml"
     api.config_manager = MagicMock()
     return api
@@ -1159,3 +1162,647 @@ def test_config_import_identity_redaction_preserves_by_name_for_room_servers(che
         assert by_name["main-room"] == bytes.fromhex("ABCD")
         # Unknown existing room keeps empty value when imported as redacted.
         assert by_name["new-room"] == ""
+
+
+def test_stats_includes_versions_and_buildroot_image_info(cherrypy_ctx):
+    del cherrypy_ctx
+    api = _make_api({"radio_type": "sx1262", "web": {"site_name": "Field"}})
+    api.stats_getter = lambda: {"uptime": 10}
+
+    with patch("repeater.web.api_endpoints.get_buildroot_image_info", return_value={"image_name": "pyMC", "image_version": "1.2.3"}):
+        out = api.stats()
+
+    assert out["uptime"] == 10
+    assert out["radio_type"] == "sx1262"
+    assert out["site_name"] == "Field"
+    assert out["version"]
+    assert out["image_name"] == "pyMC"
+    assert out["image_version"] == "1.2.3"
+
+
+def test_gps_snapshot_when_service_present_and_default_when_absent(cherrypy_ctx):
+    del cherrypy_ctx
+    api = _make_api({"gps": {"enabled": True}})
+
+    api.daemon_instance = SimpleNamespace(gps_service=SimpleNamespace(get_snapshot=lambda: {"running": True}))
+    out = api.gps()
+    assert out == {"success": True, "data": {"running": True}}
+
+    api.daemon_instance = SimpleNamespace(gps_service=None)
+    out2 = api.gps()
+    assert out2["success"] is True
+    assert out2["data"]["status"]["state"] == "disabled"
+
+
+def test_check_pymc_console_and_mqtt_status_and_broker_presets(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api()
+
+    request.method = "OPTIONS"
+    assert api.check_pymc_console() == ""
+
+    request.method = "GET"
+    with patch("os.path.isdir", return_value=True):
+        out = api.check_pymc_console()
+    assert out["success"] is True
+    assert out["data"]["exists"] is True
+
+    # mqtt status when no handler reachable
+    api.daemon_instance = None
+    status = api.mqtt_status()
+    assert status["success"] is True
+    assert status["data"]["handler_active"] is False
+
+    # mqtt status with active connections
+    conn = SimpleNamespace(
+        enabled=True,
+        broker={"name": "main", "host": "mqtt.local"},
+        is_connected=lambda: True,
+        has_pending_reconnect=lambda: False,
+        format="json",
+    )
+    _attach_storage(api, SimpleNamespace(mqtt_handler=SimpleNamespace(connections=[conn])))
+    status2 = api.mqtt_status()
+    assert status2["success"] is True
+    assert status2["data"]["brokers"][0]["name"] == "main"
+
+    with patch("repeater.presets.list_presets", return_value=["waev"]), patch(
+        "repeater.presets.get_preset",
+        return_value={"display_name": "Waev", "website": "https://waev.app", "brokers": [{"host": "h"}]},
+    ):
+        presets = api.broker_presets()
+    assert presets["success"] is True
+    assert presets["data"][0]["id"] == "waev"
+
+
+def test_send_advert_paths(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api()
+
+    request.method = "OPTIONS"
+    assert api.send_advert() == ""
+
+    request.method = "POST"
+    no_func = api.send_advert()
+    assert no_func["success"] is False
+    assert "not configured" in no_func["error"]
+
+    api.send_advert_func = MagicMock()
+    no_loop = api.send_advert()
+    assert no_loop["success"] is False
+    assert "Event loop not available" in no_loop["error"]
+
+    api.event_loop = object()
+    api.send_advert_func = MagicMock()
+    fake_future = SimpleNamespace(result=lambda timeout: True)
+    with patch("asyncio.run_coroutine_threadsafe", return_value=fake_future):
+        ok = api.send_advert()
+    assert ok == {"success": True, "data": "Advert sent successfully"}
+
+    fake_future_fail = SimpleNamespace(result=lambda timeout: False)
+    with patch("asyncio.run_coroutine_threadsafe", return_value=fake_future_fail):
+        bad = api.send_advert()
+    assert bad["success"] is False
+
+
+def test_set_mode_and_set_duty_cycle_paths(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api({"repeater": {}, "duty_cycle": {}})
+
+    request.method = "OPTIONS"
+    assert api.set_mode() == ""
+    assert api.set_duty_cycle() == ""
+
+    request.method = "POST"
+    request.json = {"mode": "invalid"}
+    invalid = api.set_mode()
+    assert invalid["success"] is False
+
+    request.json = {"mode": "monitor"}
+    ok = api.set_mode()
+    assert ok == {"success": True, "mode": "monitor"}
+    assert api.config["repeater"]["mode"] == "monitor"
+
+    request.json = {"enabled": False}
+    duty = api.set_duty_cycle()
+    assert duty == {"success": True, "enabled": False}
+    assert api.config["duty_cycle"]["enforcement_enabled"] is False
+
+
+def test_update_duty_cycle_config_branches(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api({"duty_cycle": {}})
+
+    request.method = "OPTIONS"
+    assert api.update_duty_cycle_config() == ""
+
+    request.method = "POST"
+    request.json = {"max_airtime_percent": 0.01}
+    bad = api.update_duty_cycle_config()
+    assert bad["success"] is False
+    assert "0.1-100.0" in bad["error"]
+
+    request.json = {}
+    none = api.update_duty_cycle_config()
+    assert none["success"] is False
+    assert "No valid settings" in none["error"]
+
+    request.json = {"max_airtime_percent": 10, "enforcement_enabled": True}
+    api.config_manager.update_and_save.return_value = {"saved": False, "error": "disk"}
+    save_fail = api.update_duty_cycle_config()
+    assert save_fail["success"] is False
+    assert "disk" in save_fail["error"]
+
+    api.config_manager.update_and_save.return_value = {"saved": True, "live_updated": True}
+    ok = api.update_duty_cycle_config()
+    assert ok["success"] is True
+    assert ok["data"]["persisted"] is True
+    assert api.config["duty_cycle"]["max_airtime_per_minute"] == 6000
+
+
+def test_update_advert_rate_limit_config_branches(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api({"repeater": {}})
+
+    request.method = "OPTIONS"
+    assert api.update_advert_rate_limit_config() == ""
+
+    request.method = "POST"
+    request.json = {}
+    none = api.update_advert_rate_limit_config()
+    assert none["success"] is False
+    assert "No valid settings" in none["error"]
+
+    request.json = {
+        "rate_limit_enabled": True,
+        "bucket_capacity": 0,
+        "refill_tokens": 0,
+        "refill_interval_seconds": 1,
+        "min_interval_seconds": -10,
+        "penalty_enabled": True,
+        "violation_threshold": 0,
+        "violation_decay_seconds": 1,
+        "base_penalty_seconds": 1,
+        "penalty_multiplier": 0.1,
+        "max_penalty_seconds": 1,
+        "adaptive_enabled": True,
+        "ewma_alpha": 99,
+        "hysteresis_seconds": -1,
+        "quiet_max": 0.05,
+        "normal_max": 0.2,
+        "busy_max": 0.5,
+    }
+    api.config_manager.update_and_save.return_value = {"saved": True, "live_updated": False}
+    ok = api.update_advert_rate_limit_config()
+    assert ok["success"] is True
+    rate = api.config["repeater"]["advert_rate_limit"]
+    pen = api.config["repeater"]["advert_penalty_box"]
+    ad = api.config["repeater"]["advert_adaptive"]
+    assert rate["bucket_capacity"] == 1
+    assert rate["refill_tokens"] == 1
+    assert rate["refill_interval_seconds"] == 60
+    assert rate["min_interval_seconds"] == 0
+    assert pen["violation_threshold"] == 1
+    assert pen["base_penalty_seconds"] == 60
+    assert pen["penalty_multiplier"] == 1.0
+    assert pen["max_penalty_seconds"] == 60
+    assert ad["ewma_alpha"] == 1.0
+    assert ad["hysteresis_seconds"] == 0
+    assert ad["thresholds"]["quiet_max"] == 0.05
+
+
+def test_logs_hardware_stats_and_hardware_processes(cherrypy_ctx):
+    del cherrypy_ctx
+    api = _make_api()
+
+    with patch("repeater.web.http_server._log_buffer", SimpleNamespace(logs=[])):
+        logs = api.logs()
+    assert "logs" in logs
+    assert logs["logs"][0]["message"] == "No logs available"
+
+    storage = SimpleNamespace(
+        get_hardware_stats=MagicMock(return_value={"cpu": 10}),
+        get_hardware_processes=MagicMock(return_value=[{"pid": 1}]),
+    )
+    _attach_storage(api, storage)
+
+    hs = api.hardware_stats()
+    hp = api.hardware_processes()
+    assert hs == {"success": True, "data": {"cpu": 10}}
+    assert hp == {"success": True, "data": [{"pid": 1}]}
+
+    storage.get_hardware_stats.return_value = None
+    assert api.hardware_stats()["success"] is False
+
+    storage.get_hardware_processes.return_value = None
+    assert api.hardware_processes()["success"] is False
+
+
+def test_noise_floor_and_crc_endpoints(cherrypy_ctx):
+    del cherrypy_ctx
+    api = _make_api()
+    storage = SimpleNamespace(
+        get_noise_floor_history=MagicMock(return_value=[{"v": -110}]),
+        get_noise_floor_stats=MagicMock(return_value={"avg": -105}),
+        get_noise_floor_rrd=MagicMock(return_value=[[1, -100]]),
+        get_crc_error_count=MagicMock(return_value=3),
+        get_crc_error_history=MagicMock(return_value=[{"id": 1}]),
+    )
+    _attach_storage(api, storage)
+
+    h = api.noise_floor_history(hours="24", limit="5")
+    s = api.noise_floor_stats(hours="12")
+    c = api.noise_floor_chart_data(hours="2")
+    cc = api.crc_error_count(hours="6")
+    ch = api.crc_error_history(hours="6", limit="10")
+
+    assert h["success"] is True and h["data"]["count"] == 1
+    assert s["success"] is True and s["data"]["stats"]["avg"] == -105
+    assert c["success"] is True and c["data"]["chart_data"] == [[1, -100]]
+    assert cc["success"] is True and cc["data"]["crc_error_count"] == 3
+    assert ch["success"] is True and ch["data"]["count"] == 1
+
+    err = api.crc_error_count(hours="bad")
+    assert err["success"] is False
+
+
+def test_advert_contact_and_rate_limit_stats_endpoints(cherrypy_ctx):
+    del cherrypy_ctx
+    api = _make_api()
+
+    miss = api.adverts_by_contact_type()
+    assert miss["success"] is False
+
+    storage = SimpleNamespace(
+        sqlite_handler=SimpleNamespace(
+            get_adverts_by_contact_type=MagicMock(return_value=[{"id": 1}]),
+            get_adverts_count_by_contact_type=MagicMock(return_value=7),
+        )
+    )
+    _attach_storage(api, storage)
+
+    out = api.adverts_by_contact_type(contact_type="room_server", limit="2", offset="0", hours="24")
+    count = api.adverts_count_by_contact_type(contact_type="room_server", hours="24")
+    assert out["success"] is True and out["count"] == 1
+    assert count["success"] is True and count["data"]["count"] == 7
+
+    bad_fmt = api.adverts_count_by_contact_type(contact_type="room_server", hours="bad")
+    assert bad_fmt["success"] is False
+
+    no_daemon = api.advert_rate_limit_stats()
+    assert no_daemon["success"] is False
+
+    api.daemon_instance = SimpleNamespace(advert_helper=None)
+    no_helper = api.advert_rate_limit_stats()
+    assert no_helper["success"] is False
+
+    api.daemon_instance = SimpleNamespace(advert_helper=SimpleNamespace())
+    no_method = api.advert_rate_limit_stats()
+    assert no_method["success"] is False
+
+    api.daemon_instance = SimpleNamespace(
+        advert_helper=SimpleNamespace(get_rate_limit_stats=lambda: {"tier": "normal"})
+    )
+    ok = api.advert_rate_limit_stats()
+    assert ok == {"success": True, "data": {"tier": "normal"}}
+
+
+def test_transport_keys_and_transport_key_and_unscoped_policy(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api({"mesh": {}})
+    storage = SimpleNamespace(
+        get_transport_keys=MagicMock(return_value=[{"id": 1}]),
+        create_transport_key=MagicMock(return_value=10),
+        get_transport_key_by_id=MagicMock(return_value={"id": 1}),
+        update_transport_key=MagicMock(return_value=True),
+        delete_transport_key=MagicMock(return_value=True),
+    )
+    _attach_storage(api, storage)
+
+    request.method = "GET"
+    keys = api.transport_keys()
+    assert keys["success"] is True and keys["count"] == 1
+
+    request.method = "POST"
+    request.json = {"name": "", "flood_policy": "allow"}
+    assert api.transport_keys()["success"] is False
+
+    request.json = {"name": "k1", "flood_policy": "invalid"}
+    assert api.transport_keys()["success"] is False
+
+    request.json = {"name": "k1", "flood_policy": "allow", "last_used": "bad"}
+    created = api.transport_keys()
+    assert created["success"] is True
+
+    request.method = "GET"
+    assert api.transport_key("x")["success"] is False
+    assert api.transport_key("1")["success"] is True
+
+    request.method = "PUT"
+    request.json = {"flood_policy": "maybe"}
+    assert api.transport_key("1")["success"] is False
+
+    request.json = {"name": "new", "flood_policy": "deny", "last_used": "not-ts"}
+    updated = api.transport_key("1")
+    assert updated["success"] is True
+
+    request.method = "DELETE"
+    deleted = api.transport_key("1")
+    assert deleted["success"] is True
+
+    request.method = "GET"
+    assert api.unscoped_flood_policy()["success"] is False
+
+    request.method = "POST"
+    request.json = {}
+    assert api.unscoped_flood_policy()["success"] is False
+
+    request.json = {"unscoped_flood_allow": "yes"}
+    assert api.unscoped_flood_policy()["success"] is False
+
+    api.config_manager.save_to_file.return_value = True
+    request.json = {"unscoped_flood_allow": True}
+    ok = api.unscoped_flood_policy()
+    assert ok["success"] is True
+    assert api.config["mesh"]["unscoped_flood_allow"] is True
+
+
+class _FakeIdentityObj:
+    def __init__(self, first=0x42):
+        self._pk = bytes([first]) + (b"A" * 31)
+
+    def get_public_key(self):
+        return self._pk
+
+    def get_address_bytes(self):
+        return b"\x12\x34"
+
+
+class _FakeClient:
+    def __init__(self, key_hex: str, admin: bool):
+        self.id = SimpleNamespace(get_public_key=lambda: bytes.fromhex(key_hex))
+        self._admin = admin
+        self.last_activity = 1.0
+        self.last_login_success = 2.0
+        self.last_timestamp = 3.0
+
+    def is_admin(self):
+        return self._admin
+
+
+class _FakeACL:
+    def __init__(self, clients, admin_password="a", guest_password="g"):
+        self._clients = list(clients)
+        self.max_clients = 10
+        self.admin_password = admin_password
+        self.guest_password = guest_password
+        self.allow_read_only = True
+
+    def get_num_clients(self):
+        return len(self._clients)
+
+    def get_all_clients(self):
+        return list(self._clients)
+
+    def remove_client(self, pubkey):
+        before = len(self._clients)
+        self._clients = [c for c in self._clients if c.id.get_public_key() != pubkey]
+        return len(self._clients) < before
+
+
+def test_identity_endpoints_paths(cherrypy_ctx):
+    request, response = cherrypy_ctx
+    api = _make_api({"identities": {"room_servers": [], "companions": []}})
+
+    request.method = "OPTIONS"
+    assert api.identities() == ""
+
+    request.method = "GET"
+    assert api.identities()["success"] is False
+
+    id_mgr = SimpleNamespace(
+        list_identities=lambda: [{"name": "room_server:main", "hash": "0x42", "address": "1234"}],
+        get_identities_by_type=lambda t: (
+            [("main", _FakeIdentityObj(0x42), {"settings": {"x": 1}})]
+            if t == "room_server"
+            else [("comp1", _FakeIdentityObj(0x51), {"settings": {"tcp_port": 5000}})]
+        ),
+        get_identity_by_name=lambda n: (_FakeIdentityObj(0x42), {}, "room_server") if n == "main" else None,
+        named_identities={"comp1": 1, "main": 1},
+    )
+    api.daemon_instance = SimpleNamespace(identity_manager=id_mgr)
+    api.config = {
+        "identities": {
+            "room_servers": [{"name": "main", "identity_key": "a" * 64, "settings": {"x": 1}}],
+            "companions": [{"name": "comp1", "identity_key": "b" * 64, "settings": {"tcp_port": 5000}}],
+        }
+    }
+    api.config_manager.save_to_file.return_value = True
+
+    ids = api.identities()
+    assert ids["success"] is True
+    assert ids["data"]["total_configured"] == 1
+    assert ids["data"]["total_configured_companions"] == 1
+
+    assert api.identity()["success"] is False
+    assert api.identity(name="missing")["success"] is False
+    one = api.identity(name="main")
+    assert one["success"] is True
+    assert one["data"]["runtime"]["registered"] is True
+
+    # create identity validation + success path
+    request.method = "POST"
+    request.json = {}
+    assert api.create_identity()["success"] is False
+    request.json = {"name": "x", "type": "invalid"}
+    assert api.create_identity()["success"] is False
+    request.json = {"name": "x", "type": "room_server", "settings": {"admin_password": "p", "guest_password": "p"}}
+    assert api.create_identity()["success"] is False
+    request.json = {"name": "comp1", "type": "companion", "identity_key": "aa" * 32}
+    assert api.create_identity()["success"] is False
+
+    request.json = {"name": "new-comp", "type": "companion", "identity_key": "cc" * 32, "settings": {"node_name": "N"}}
+    api.event_loop = object()
+    api.daemon_instance = SimpleNamespace(add_companion_from_config=MagicMock())
+    with patch("asyncio.run_coroutine_threadsafe", return_value=SimpleNamespace(result=lambda timeout: True)):
+        created = api.create_identity()
+    assert created["success"] is True
+
+    # update identity method guard and room_server success
+    request.method = "GET"
+    with pytest.raises(cherrypy.HTTPError):
+        api.update_identity()
+    request.method = "PUT"
+    api.daemon_instance = None
+    request.json = {"name": "main", "settings": {"node_name": "updated"}}
+    upd = api.update_identity()
+    assert upd["success"] is True
+
+    # delete identity paths
+    request.method = "GET"
+    with pytest.raises(cherrypy.HTTPError):
+        api.delete_identity(name="main")
+    request.method = "DELETE"
+    assert api.delete_identity(name="", type="room_server")["success"] is False
+    deleted = api.delete_identity(name="main", type="room_server")
+    assert deleted["success"] is True
+
+    # companion delete
+    api.config["identities"]["companions"] = [{"name": "comp1", "identity_key": "11" * 32}]
+    api.daemon_instance = SimpleNamespace(identity_manager=id_mgr)
+    d2 = api.delete_identity(name="comp1", type="companion")
+    assert d2["success"] is True
+    assert "comp1" not in id_mgr.named_identities
+    assert response.status in (200, 405)
+
+
+def test_acl_endpoints_paths(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api()
+
+    request.method = "OPTIONS"
+    assert api.acl_info() == ""
+    assert api.acl_clients() == ""
+    assert api.acl_remove_client() == ""
+    assert api.acl_stats() == ""
+
+    request.method = "GET"
+    assert api.acl_info()["success"] is False
+
+    clients = [_FakeClient("aa" * 32, True), _FakeClient("bb" * 32, False)]
+    acl = _FakeACL(clients)
+    login_helper = SimpleNamespace(get_acl_dict=lambda: {0x42: acl, 0x51: _FakeACL([])})
+    id_mgr = SimpleNamespace(
+        get_identities_by_type=lambda t: (
+            [("room1", _FakeIdentityObj(0x42), {})] if t == "room_server" else [("comp1", _FakeIdentityObj(0x51), {})]
+        )
+    )
+    local = _FakeIdentityObj(0x42)
+    frame_server = SimpleNamespace(companion_hash="0x51", _client_writer=SimpleNamespace(get_extra_info=lambda k: ("10.0.0.2", 1234)))
+    api.daemon_instance = SimpleNamespace(
+        login_helper=login_helper,
+        identity_manager=id_mgr,
+        local_identity=local,
+        companion_bridges={0x51: object()},
+        companion_frame_servers=[frame_server],
+    )
+
+    info = api.acl_info()
+    assert info["success"] is True
+    assert info["data"]["total_identities"] >= 2
+
+    all_clients = api.acl_clients()
+    assert all_clients["success"] is True
+    assert all_clients["data"]["count"] >= 1
+    assert api.acl_clients(identity_hash="bad")["success"] is False
+    assert api.acl_clients(identity_name="missing")["success"] is False
+
+    request.method = "POST"
+    request.json = {}
+    assert api.acl_remove_client()["success"] is False
+    request.json = {"public_key": "zz"}
+    assert api.acl_remove_client()["success"] is False
+    request.json = {"public_key": "aa" * 32, "identity_hash": "0x42"}
+    removed = api.acl_remove_client()
+    assert removed["success"] is True
+
+    request.method = "GET"
+    st = api.acl_stats()
+    assert st["success"] is True
+    assert st["data"]["total_identities"] >= 1
+
+
+def test_room_endpoint_slice(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api()
+
+    request.method = "OPTIONS"
+    assert api.room_messages(room_name="x") == ""
+    assert api.room_stats(room_name="x") == ""
+    assert api.room_clients(room_name="x") == ""
+    assert api.room_message(room_name="x") == ""
+    assert api.room_messages_clear(room_name="x") == ""
+
+    # Basic room messages success path via helper patch
+    request.method = "GET"
+    db = SimpleNamespace(
+        get_room_message_count=MagicMock(return_value=1),
+        get_room_messages=MagicMock(return_value=[{"id": 1, "author_pubkey": "aa" * 32, "post_timestamp": 1.0, "sender_timestamp": 1, "message_text": "m", "txt_type": 0}]),
+        get_messages_since=MagicMock(return_value=[]),
+        delete_room_message=MagicMock(return_value=True),
+        clear_room_messages=MagicMock(return_value=1),
+        get_all_room_clients=MagicMock(return_value=[]),
+    )
+    room = SimpleNamespace(db=db, max_posts=10, _running=True, next_push_time=0, last_cleanup_time=0)
+    with patch.object(api, "_get_room_server_by_name_or_hash", return_value={"room_server": room, "name": "room", "hash": 0x42, "identity": None, "config": {}}):
+        _attach_storage(api, SimpleNamespace(get_node_name_by_pubkey=lambda _pk: "Node"))
+        msgs = api.room_messages(room_name="room")
+        assert msgs["success"] is True
+        assert msgs["data"]["count"] == 1
+
+        request.method = "DELETE"
+        one = api.room_message(room_name="room", message_id="1")
+        assert one["success"] is True
+        cleared = api.room_messages_clear(room_name="room")
+        assert cleared["success"] is True
+
+
+def test_update_mqtt_config_validation_and_success(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api()
+
+    request.method = "OPTIONS"
+    assert api.update_mqtt_config() == ""
+
+    request.method = "POST"
+    request.json = {}
+    assert api.update_mqtt_config()["success"] is False
+
+    request.json = {"brokers": "not-list"}
+    assert api.update_mqtt_config()["success"] is False
+
+    request.json = {"brokers": ["bad"]}
+    assert "must be an object" in api.update_mqtt_config()["error"]
+
+    request.json = {"brokers": [{"name": "n", "host": "h", "port": "x", "format": "json"}]}
+    assert "invalid port" in api.update_mqtt_config()["error"]
+
+    request.json = {
+        "iata_code": "SFO",
+        "status_interval": 20,
+        "brokers": [
+            {"preset": "waev"},
+            {"name": "a", "host": "h", "port": 443, "format": "json", "enabled": True},
+        ],
+    }
+    api.config_manager.update_and_save.return_value = {"success": True, "saved": True}
+    out = api.update_mqtt_config()
+    assert out["success"] is True
+    assert out["data"]["restart_required"] is True
+
+    api.config_manager.update_and_save.return_value = {"success": False, "error": "save failed"}
+    out2 = api.update_mqtt_config()
+    assert out2["success"] is False
+    assert "save failed" in out2["error"]
+
+
+def test_restart_service_options_method_and_result_paths(cherrypy_ctx):
+    request, _ = cherrypy_ctx
+    api = _make_api()
+
+    request.method = "OPTIONS"
+    assert api.restart_service() == ""
+
+    request.method = "GET"
+    with pytest.raises(cherrypy.HTTPError):
+        api.restart_service()
+
+    request.method = "POST"
+    with patch("repeater.service_utils.restart_service", return_value=(True, "ok")):
+        ok = api.restart_service()
+    assert ok == {"success": True, "message": "ok"}
+
+    with patch("repeater.service_utils.restart_service", return_value=(False, "nope")):
+        err = api.restart_service()
+    assert err["success"] is False
+    assert "nope" in err["error"]

@@ -25,7 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import cherrypy
@@ -384,7 +384,7 @@ class _UpdateState:
             if fresh != "unknown":
                 self.current_version = fresh
             self.has_update = _has_update(self.current_version, latest)
-            self.last_checked = datetime.utcnow()
+            self.last_checked = datetime.now(timezone.utc)
             self.state = "idle"
             self.error_message = None
 
@@ -392,7 +392,7 @@ class _UpdateState:
         with self._lock:
             self.state = "error"
             self.error_message = msg
-            self.last_checked = datetime.utcnow()
+            self.last_checked = datetime.now(timezone.utc)
 
     def _fail_check_ratelimit(self, msg: str, reset_at: Optional[datetime]) -> None:
         """Like _fail_check but keeps existing version data intact and records
@@ -401,7 +401,7 @@ class _UpdateState:
             # Keep state as idle so the UI still shows version info
             self.state = "idle"
             self.error_message = msg
-            self.last_checked = datetime.utcnow()
+            self.last_checked = datetime.now(timezone.utc)
             self.rate_limit_until = reset_at
 
     def start_install(self, thread: threading.Thread) -> bool:
@@ -463,7 +463,7 @@ def _fetch_url(url: str, timeout: int = 10) -> str:
             try:
                 reset_ts = exc.headers.get("X-RateLimit-Reset")
                 if reset_ts:
-                    reset_at = datetime.utcfromtimestamp(int(reset_ts))
+                    reset_at = datetime.fromtimestamp(int(reset_ts), timezone.utc)
             except Exception:
                 pass
             reset_str = reset_at.strftime("%H:%M UTC") if reset_at else "a short while"
@@ -982,7 +982,7 @@ class UpdateAPIEndpoints:
 
         # Respect GitHub rate-limit backoff window
         if not force and _state.rate_limit_until is not None:
-            remaining = (_state.rate_limit_until - datetime.utcnow()).total_seconds()
+            remaining = (_state.rate_limit_until - datetime.now(timezone.utc)).total_seconds()
             if remaining > 0:
                 reset_str = _state.rate_limit_until.strftime("%H:%M UTC")
                 return self._ok({
@@ -992,7 +992,7 @@ class UpdateAPIEndpoints:
                 })
 
         if not force and snap["last_checked"] is not None:
-            age = (datetime.utcnow() - _state.last_checked).total_seconds()
+            age = (datetime.now(timezone.utc) - _state.last_checked).total_seconds()
             if age < CHECK_CACHE_TTL and snap["latest_version"] is not None:
                 return self._ok({"message": "Using cached result", "state": snap["state"], **snap})
 

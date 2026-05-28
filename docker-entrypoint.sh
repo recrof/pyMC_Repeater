@@ -13,14 +13,36 @@ YQ_CMD="${YQ_CMD:-/usr/local/bin/yq}"
 
 mkdir -p "${CONFIG_DIR}"
 
+print_permission_help() {
+    echo "If you are bind-mounting ./config or ./data, ensure the host paths are writable by ${RUNTIME_USER} (${RUNTIME_UID}:${RUNTIME_GID})." >&2
+    echo "For the default image user, run: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} ./config ./data" >&2
+}
+
 copy_or_die() {
     src="$1"
     dest="$2"
     if ! cp "${src}" "${dest}"; then
         echo "Failed to initialize ${dest} from ${src}." >&2
-        echo "If you are bind-mounting ./config.yaml, ensure the host path is writable by ${RUNTIME_USER} (${RUNTIME_UID}:${RUNTIME_GID})." >&2
+        print_permission_help
         exit 1
     fi
+}
+
+use_runtime_merged_config() {
+    src="$1"
+    runtime_dir="$(mktemp -d /tmp/pymc-repeater-config.XXXXXX)"
+    runtime_config="${runtime_dir}/config.yaml"
+
+    if ! cp "${src}" "${runtime_config}"; then
+        echo "Failed to prepare temporary merged config at ${runtime_config}; keeping the existing config." >&2
+        return 1
+    fi
+
+    CONFIG_PATH="${runtime_config}"
+    echo "Using merged config from ${CONFIG_PATH} for this container start only." >&2
+    echo "Fix the bind-mounted config ownership so future upgrades can persist merged config changes." >&2
+    print_permission_help
+    return 0
 }
 
 merge_config_from_example() {
@@ -62,7 +84,10 @@ merge_config_from_example() {
     fi
 
     if ! cmp -s "${config_path}" "${merged_config}"; then
-        copy_or_die "${merged_config}" "${config_path}"
+        if ! cp "${merged_config}" "${config_path}"; then
+            echo "Failed to update ${config_path} from merged config; the bind-mounted config is not writable." >&2
+            use_runtime_merged_config "${merged_config}" || true
+        fi
     fi
 
     cleanup_merge
@@ -70,7 +95,11 @@ merge_config_from_example() {
 }
 
 if [ ! -f "${EXAMPLE_PATH}" ] && [ -f "${BUNDLED_EXAMPLE_PATH}" ]; then
-    copy_or_die "${BUNDLED_EXAMPLE_PATH}" "${EXAMPLE_PATH}"
+    if ! cp "${BUNDLED_EXAMPLE_PATH}" "${EXAMPLE_PATH}"; then
+        echo "Could not copy bundled example config to ${EXAMPLE_PATH}; using bundled example for config merge only." >&2
+        print_permission_help
+        EXAMPLE_PATH="${BUNDLED_EXAMPLE_PATH}"
+    fi
 fi
 
 if [ -d "${CONFIG_PATH}" ]; then

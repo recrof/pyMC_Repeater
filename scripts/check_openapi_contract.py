@@ -10,15 +10,13 @@ Method checks are warning-only by default and can be made strict.
 
 from __future__ import annotations
 
-import ast
 import argparse
+import ast
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = ROOT / "repeater" / "web"
@@ -173,11 +171,7 @@ def _has_expose_decorator(fn: ast.FunctionDef) -> bool:
     for d in fn.decorator_list:
         # @cherrypy.expose
         if isinstance(d, ast.Attribute):
-            if (
-                d.attr == "expose"
-                and isinstance(d.value, ast.Name)
-                and d.value.id == "cherrypy"
-            ):
+            if d.attr == "expose" and isinstance(d.value, ast.Name) and d.value.id == "cherrypy":
                 return True
     return False
 
@@ -205,14 +199,12 @@ def _candidate_suffixes(fn: ast.FunctionDef) -> list[str]:
     return [base]
 
 
-def _collect_class_routes(module_path: Path, class_name: str, prefixes: list[str]) -> dict[str, RouteInfo]:
+def _collect_class_routes(
+    module_path: Path, class_name: str, prefixes: list[str]
+) -> dict[str, RouteInfo]:
     tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
     cls = next(
-        (
-            n
-            for n in tree.body
-            if isinstance(n, ast.ClassDef) and n.name == class_name
-        ),
+        (n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name),
         None,
     )
     if cls is None:
@@ -317,9 +309,7 @@ def main() -> int:
             continue
         if _is_allowlisted(path, allowlist):
             continue
-        errors.append(
-            f"Undocumented endpoint in code (not in OpenAPI and not allowlisted): {path}"
-        )
+        errors.append(f"Undocumented endpoint in code (not in OpenAPI and not allowlisted): {path}")
 
     if warnings:
         print("OpenAPI contract warnings:")

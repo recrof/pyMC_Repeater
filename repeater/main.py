@@ -438,9 +438,9 @@ class RepeaterDaemon:
                 elif isinstance(identity_key, str):
                     try:
                         identity_key_bytes = bytes.fromhex(identity_key)
-                        if len(identity_key_bytes) != 32:
+                        if len(identity_key_bytes) not in (32, 64):
                             logger.error(
-                                f"Identity key for '{name}' is invalid length: {len(identity_key_bytes)} bytes (expected 32)"
+                                f"Identity key for '{name}' is invalid length: {len(identity_key_bytes)} bytes (expected 32 or 64)"
                             )
                             continue
                     except ValueError as e:

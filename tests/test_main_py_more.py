@@ -38,6 +38,7 @@ async def test_load_additional_identities_valid_and_invalid_entries():
             {"name": "bad-type", "identity_key": 12345},
             {"name": "good-bytes", "identity_key": b"\x10" * 32},
             {"name": "good-hex", "identity_key": ("11" * 32)},
+            {"name": "good-hex-64", "identity_key": ("22" * 64)},
         ]
     }
 
@@ -48,10 +49,10 @@ async def test_load_additional_identities_valid_and_invalid_entries():
     with patch("pymc_core.LocalIdentity", _FakeLocalIdentity):
         await daemon._load_additional_identities()
 
-    # Only the two valid entries should be registered.
-    assert daemon._register_identity_everywhere.call_count == 2
+    # Only valid entries should be registered (including 64-byte firmware keys).
+    assert daemon._register_identity_everywhere.call_count == 3
     names = [c.kwargs["name"] for c in daemon._register_identity_everywhere.call_args_list]
-    assert names == ["good-bytes", "good-hex"]
+    assert names == ["good-bytes", "good-hex", "good-hex-64"]
 
 
 @pytest.mark.asyncio

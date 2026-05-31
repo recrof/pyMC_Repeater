@@ -95,6 +95,7 @@ logger = logging.getLogger("HTTPServer")
 # GET    /api/transport_keys - List all transport keys
 # POST   /api/transport_keys - Create new transport key
 # GET    /api/transport_key?key_id=X - Get specific transport key
+# PUT    /api/transport_key?key_id=X - Update transport key
 # DELETE /api/transport_key?key_id=X - Delete transport key
 
 # Network Policy

@@ -434,6 +434,7 @@ paths:
                         type: object
                       raw_attributes:
                         type: object
+                        additionalProperties: true
 
   /gps_stream:
     get:
@@ -475,6 +476,23 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [logs]
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      type: object
+                      required: [message, timestamp, level]
+                      properties:
+                        message:
+                          type: string
+                        timestamp:
+                          type: string
+                          format: date-time
+                        level:
+                          type: string
+                  error:
+                    type: string
 
   /hardware_stats:
     get:
@@ -1395,6 +1413,52 @@ paths:
             application/json:
               schema:
                 type: object
+    put:
+      tags: [Transport Keys]
+      summary: Update transport key
+      description: Update an existing transport encryption key
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: key_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Key ID to update
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Updated key name
+                flood_policy:
+                  type: string
+                  enum: [allow, deny]
+                  description: Updated flood policy
+                transport_key:
+                  type: string
+                  description: Updated transport key hex
+                parent_id:
+                  type: integer
+                  nullable: true
+                  description: Updated parent transport key ID
+                last_used:
+                  type: string
+                  format: date-time
+                  description: Updated last-used timestamp in ISO-8601 format
+      responses:
+        '200':
+          description: Key updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
     delete:
       tags: [Transport Keys]
       summary: Delete transport key
@@ -1456,17 +1520,50 @@ paths:
           application/json:
             schema:
               type: object
+              required: [target_id]
               properties:
-                node_id:
+                target_id:
                   type: string
                   description: Target node identifier
+                timeout:
+                  type: integer
+                  description: Ping timeout in seconds
+                  default: 10
       responses:
         '200':
           description: Ping sent
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse'
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    required: [target_id, rtt_ms, snr_db, rssi, path, tag]
+                    properties:
+                      target_id:
+                        type: string
+                      rtt_ms:
+                        type: number
+                      snr_db:
+                        type: number
+                      rssi:
+                        type: number
+                      path:
+                        type: array
+                        items:
+                          type: string
+                      tag:
+                        type: integer
+                      path_hash_mode:
+                        type: integer
+                  message:
+                    type: string
+                  error:
+                    type: string
 
   # ============================================================================
   # Identity Management
@@ -2845,6 +2942,31 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    required: [meta, config]
+                    properties:
+                      meta:
+                        type: object
+                        required: [exported_at, version, config_path, includes_secrets]
+                        properties:
+                          exported_at:
+                            type: string
+                            format: date-time
+                          version:
+                            type: string
+                          config_path:
+                            type: string
+                          includes_secrets:
+                            type: boolean
+                      config:
+                        type: object
+                  error:
+                    type: string
 
   /config_import:
     post:
@@ -2875,6 +2997,24 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    required: [identity_key_hex, key_length_bytes]
+                    properties:
+                      identity_key_hex:
+                        type: string
+                      key_length_bytes:
+                        type: integer
+                      public_key_hex:
+                        type: string
+                      node_address:
+                        type: string
+                  error:
+                    type: string
 
   /generate_vanity_key:
     post:
@@ -2890,6 +3030,8 @@ paths:
               properties:
                 prefix:
                   type: string
+                  minLength: 1
+                  maxLength: 8
                 apply:
                   type: boolean
       responses:
@@ -2899,6 +3041,24 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    required: [public_hex, private_hex, attempts]
+                    properties:
+                      public_hex:
+                        type: string
+                      private_hex:
+                        type: string
+                      attempts:
+                        type: integer
+                      applied:
+                        type: boolean
+                  error:
+                    type: string
 
   /db_stats:
     get:
@@ -2911,6 +3071,36 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    required: [database_size_bytes, rrd_size_bytes, tables]
+                    properties:
+                      database_size_bytes:
+                        type: integer
+                      rrd_size_bytes:
+                        type: integer
+                      tables:
+                        type: array
+                        items:
+                          type: object
+                          required: [name, row_count, has_timestamp]
+                          properties:
+                            name:
+                              type: string
+                            row_count:
+                              type: integer
+                            oldest_timestamp:
+                              type: number
+                            newest_timestamp:
+                              type: number
+                            has_timestamp:
+                              type: boolean
+                  error:
+                    type: string
 
   /db_purge:
     post:
@@ -2929,6 +3119,23 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data, message]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        deleted:
+                          type: integer
+                        error:
+                          type: string
+                  message:
+                    type: string
+                  error:
+                    type: string
 
   /db_vacuum:
     post:
@@ -2941,6 +3148,22 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    required: [size_before, size_after, freed_bytes]
+                    properties:
+                      size_before:
+                        type: integer
+                      size_after:
+                        type: integer
+                      freed_bytes:
+                        type: integer
+                  error:
+                    type: string
 
   /docs:
     get:

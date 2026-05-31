@@ -1833,7 +1833,7 @@ class TestEngineTransmissionAndBackgroundLifecycle:
         with patch.object(handler, "_calculate_tx_delay", return_value=0.5):
             loop = asyncio.get_running_loop()
             completed = loop.create_future()
-            completed.set_result(None)
+            completed.set_result(True)
 
             async def _fake_schedule(packet, delay, airtime_ms, local_transmission=False):
                 packet._tx_metadata = {

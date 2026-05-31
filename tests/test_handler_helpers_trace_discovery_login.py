@@ -207,13 +207,51 @@ def test_discovery_request_without_identity_does_not_send():
 @pytest.mark.asyncio
 async def test_discovery_send_packet_async_success_failure_and_exception():
     injector = AsyncMock(side_effect=[True, False, RuntimeError("send fail")])
-    helper = DiscoveryHelper(local_identity=FakeIdentity(0x42), packet_injector=injector)
+    # jitter disabled so the test doesn't sleep
+    helper = DiscoveryHelper(
+        local_identity=FakeIdentity(0x42), packet_injector=injector, response_jitter_ms=0
+    )
 
     await helper._send_packet_async(packet=object(), tag=0x11)
     await helper._send_packet_async(packet=object(), tag=0x12)
     await helper._send_packet_async(packet=object(), tag=0x13)
 
     assert injector.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_discovery_response_applies_bounded_jitter_before_send():
+    injector = AsyncMock(return_value=True)
+    helper = DiscoveryHelper(
+        local_identity=FakeIdentity(0x42), packet_injector=injector, response_jitter_ms=2000
+    )
+
+    slept = []
+
+    async def fake_sleep(secs):
+        slept.append(secs)
+
+    with patch("repeater.handler_helpers.discovery.asyncio.sleep", side_effect=fake_sleep):
+        await helper._send_packet_async(packet=object(), tag=0x55)
+
+    # Jitter applied exactly once, bounded to [0, 2.0]s, before the injection.
+    assert len(slept) == 1
+    assert 0.0 <= slept[0] <= 2.0
+    injector.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discovery_response_jitter_disabled_does_not_sleep():
+    injector = AsyncMock(return_value=True)
+    helper = DiscoveryHelper(
+        local_identity=FakeIdentity(0x42), packet_injector=injector, response_jitter_ms=0
+    )
+
+    with patch("repeater.handler_helpers.discovery.asyncio.sleep") as sleep_mock:
+        await helper._send_packet_async(packet=object(), tag=0x56)
+
+    sleep_mock.assert_not_called()
+    injector.assert_awaited_once()
 
 
 def test_discovery_send_response_without_injector_is_safe():

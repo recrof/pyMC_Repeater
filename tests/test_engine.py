@@ -12,7 +12,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from pymc_core.protocol import Packet, PacketBuilder
 from pymc_core.protocol.constants import (
     MAX_PATH_SIZE,
@@ -23,7 +22,6 @@ from pymc_core.protocol.constants import (
     ROUTE_TYPE_TRANSPORT_DIRECT,
     ROUTE_TYPE_TRANSPORT_FLOOD,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — build minimal config / mocks needed by RepeaterHandler.__init__
@@ -1083,7 +1081,9 @@ class TestTxMode:
 
         with patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock):
             with patch.object(
-                handler, "schedule_retransmit", new=AsyncMock(return_value=asyncio.create_task(_boom()))
+                handler,
+                "schedule_retransmit",
+                new=AsyncMock(return_value=asyncio.create_task(_boom())),
             ):
                 with pytest.raises(RuntimeError, match="simulated tx failure"):
                     await handler(pkt, {"snr": 0.0, "rssi": -80}, local_transmission=True)
@@ -1102,7 +1102,9 @@ class TestTxMode:
             return False
 
         with patch.object(
-            handler, "schedule_retransmit", new=AsyncMock(return_value=asyncio.create_task(_tx_false()))
+            handler,
+            "schedule_retransmit",
+            new=AsyncMock(return_value=asyncio.create_task(_tx_false())),
         ):
             transmitted = await handler(pkt, {"snr": 0.0, "rssi": -80}, local_transmission=False)
 

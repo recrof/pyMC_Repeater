@@ -1141,9 +1141,7 @@ class RepeaterHandler(BaseHandler):
                             return False
 
                     try:
-                        sent = await self.dispatcher.send_packet(
-                            fwd_pkt, wait_for_ack=False
-                        )
+                        sent = await self.dispatcher.send_packet(fwd_pkt, wait_for_ack=False)
                         if not sent:
                             logger.warning(
                                 "Retransmit failed (attempt %d): dispatcher returned false",

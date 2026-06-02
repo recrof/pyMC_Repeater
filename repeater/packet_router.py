@@ -172,9 +172,7 @@ class PacketRouter:
             # (avoids duty-cycle or dispatcher races where a later packet goes out first)
             async with self._inject_lock:
                 # Use local_transmission=True to bypass forwarding logic
-                sent = await self.daemon.repeater_handler(
-                    packet, metadata, local_transmission=True
-                )
+                sent = await self.daemon.repeater_handler(packet, metadata, local_transmission=True)
             if not sent:
                 logger.warning("Injected packet failed local transmission")
                 return False
@@ -194,9 +192,7 @@ class PacketRouter:
                     await push_rx(raw, 0, 0.0, exclude_hash=origin_hash)
                     servers = getattr(self.daemon, "companion_frame_servers", [])
                     pushed = sum(
-                        1
-                        for fs in servers
-                        if getattr(fs, "companion_hash", None) != origin_hash
+                        1 for fs in servers if getattr(fs, "companion_hash", None) != origin_hash
                     )
                     logger.debug(
                         "Echoed injected TX as raw RX (0x88) to %d companion client(s) "
@@ -221,9 +217,7 @@ class PacketRouter:
                     if dispatcher and hasattr(dispatcher, "wait_for_ack"):
                         try:
                             expected_crc = packet.get_crc()
-                            ack_ok = await dispatcher.wait_for_ack(
-                                expected_crc, timeout=5.0
-                            )
+                            ack_ok = await dispatcher.wait_for_ack(expected_crc, timeout=5.0)
                             if not ack_ok:
                                 logger.warning(
                                     "Injected packet ACK timeout (crc=%08X)", expected_crc
@@ -517,8 +511,7 @@ class PacketRouter:
             sent = await self.daemon.repeater_handler(packet, metadata)
             if sent is False:
                 logger.warning(
-                    "Inbound packet not transmitted by repeater handler "
-                    "(type=%s, header=0x%02x)",
+                    "Inbound packet not transmitted by repeater handler (type=%s, header=0x%02x)",
                     payload_type,
                     getattr(packet, "header", 0),
                 )

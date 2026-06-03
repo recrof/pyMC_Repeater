@@ -771,7 +771,9 @@ class RepeaterDaemon:
 
         bridge = RepeaterCompanionBridge(
             identity=identity,
-            packet_injector=self.router.inject_packet,
+            packet_injector=functools.partial(
+                self.router.inject_packet, origin_hash=companion_hash_str
+            ),
             node_name=node_name,
             radio_config=radio_config,
             sqlite_handler=sqlite_handler,

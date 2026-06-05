@@ -76,7 +76,7 @@ def test_get_preset_letsmesh_carries_ui_metadata():
 
 
 def test_get_preset_meshmapper_is_single_broker_mc2mqtt():
-    """MeshMapper preset is a single MC2MQTT broker on mqtt.meshmapper.cc.
+    """MeshMapper preset is a single MC2MQTT broker on mqtt.meshmapper.net.
 
     The preset intentionally re-uses the `letsmesh` format value because
     MeshMapper today speaks the standard MC2MQTT wire format with no

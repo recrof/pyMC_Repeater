@@ -9,8 +9,8 @@ import time
 
 from repeater.companion.utils import (
     CompanionContactCapacityError,
-    check_companion_contact_capacity,
     effective_max_contacts,
+    enforce_companion_contact_capacity,
     format_companion_bridge_limits,
     normalize_companion_identity_key,
     parse_companion_bridge_kwargs,
@@ -581,12 +581,21 @@ class RepeaterDaemon:
                 bridge_kwargs = parse_companion_bridge_kwargs(settings)
                 max_contacts = effective_max_contacts(bridge_kwargs)
                 if sqlite_handler:
-                    check_companion_contact_capacity(
+                    trimmed = enforce_companion_contact_capacity(
                         companion_hash_str,
                         max_contacts,
                         sqlite_handler,
+                        trim=bool(settings.get("trim_contacts_on_overflow")),
                         companion_name=name,
                     )
+                    if trimmed:
+                        logger.warning(
+                            "Companion '%s': trimmed %d contact(s) to fit "
+                            "max_contacts=%d (trim_contacts_on_overflow)",
+                            name,
+                            trimmed,
+                            max_contacts,
+                        )
 
                 bridge = RepeaterCompanionBridge(
                     identity=identity,
@@ -635,24 +644,29 @@ class RepeaterDaemon:
                         ch = Channel(name=row.get("name", ""), secret=raw)
                         bridge.channels.set(row.get("channel_idx", 0), ch)
 
-                    # Preload queued messages from SQLite into bridge
-                    for msg_dict in sqlite_handler.companion_load_messages(companion_hash_str):
-                        from pymc_core.companion.models import QueuedMessage
+                    # Preload queued messages from SQLite into bridge, bounded by
+                    # offline_queue_size (0 disables offline storage entirely).
+                    retention = getattr(bridge.message_queue, "_max_size", None)
+                    if retention != 0:
+                        for msg_dict in sqlite_handler.companion_load_messages(
+                            companion_hash_str, limit=retention or 100
+                        ):
+                            from pymc_core.companion.models import QueuedMessage
 
-                        sk = msg_dict.get("sender_key", b"")
-                        if isinstance(sk, str):
-                            sk = bytes.fromhex(sk)
-                        bridge.message_queue.push(
-                            QueuedMessage(
-                                sender_key=sk,
-                                txt_type=msg_dict.get("txt_type", 0),
-                                timestamp=msg_dict.get("timestamp", 0),
-                                text=msg_dict.get("text", ""),
-                                is_channel=bool(msg_dict.get("is_channel", False)),
-                                channel_idx=msg_dict.get("channel_idx", 0),
-                                path_len=msg_dict.get("path_len", 0),
+                            sk = msg_dict.get("sender_key", b"")
+                            if isinstance(sk, str):
+                                sk = bytes.fromhex(sk)
+                            bridge.message_queue.push(
+                                QueuedMessage(
+                                    sender_key=sk,
+                                    txt_type=msg_dict.get("txt_type", 0),
+                                    timestamp=msg_dict.get("timestamp", 0),
+                                    text=msg_dict.get("text", ""),
+                                    is_channel=bool(msg_dict.get("is_channel", False)),
+                                    channel_idx=msg_dict.get("channel_idx", 0),
+                                    path_len=msg_dict.get("path_len", 0),
+                                )
                             )
-                        )
 
                 # Ensure public channel (0) exists with default key for new companions
                 from repeater.companion.constants import DEFAULT_PUBLIC_CHANNEL_SECRET
@@ -762,12 +776,21 @@ class RepeaterDaemon:
         bridge_kwargs = parse_companion_bridge_kwargs(settings)
         max_contacts = effective_max_contacts(bridge_kwargs)
         if sqlite_handler:
-            check_companion_contact_capacity(
+            trimmed = enforce_companion_contact_capacity(
                 companion_hash_str,
                 max_contacts,
                 sqlite_handler,
+                trim=bool(settings.get("trim_contacts_on_overflow")),
                 companion_name=name,
             )
+            if trimmed:
+                logger.warning(
+                    "Hot-reload companion '%s': trimmed %d contact(s) to fit "
+                    "max_contacts=%d (trim_contacts_on_overflow)",
+                    name,
+                    trimmed,
+                    max_contacts,
+                )
 
         bridge = RepeaterCompanionBridge(
             identity=identity,
@@ -809,23 +832,27 @@ class RepeaterDaemon:
                 ch = Channel(name=row.get("name", ""), secret=raw)
                 bridge.channels.set(row.get("channel_idx", 0), ch)
 
-            for msg_dict in sqlite_handler.companion_load_messages(companion_hash_str):
-                from pymc_core.companion.models import QueuedMessage
+            retention = getattr(bridge.message_queue, "_max_size", None)
+            if retention != 0:
+                for msg_dict in sqlite_handler.companion_load_messages(
+                    companion_hash_str, limit=retention or 100
+                ):
+                    from pymc_core.companion.models import QueuedMessage
 
-                sk = msg_dict.get("sender_key", b"")
-                if isinstance(sk, str):
-                    sk = bytes.fromhex(sk)
-                bridge.message_queue.push(
-                    QueuedMessage(
-                        sender_key=sk,
-                        txt_type=msg_dict.get("txt_type", 0),
-                        timestamp=msg_dict.get("timestamp", 0),
-                        text=msg_dict.get("text", ""),
-                        is_channel=bool(msg_dict.get("is_channel", False)),
-                        channel_idx=msg_dict.get("channel_idx", 0),
-                        path_len=msg_dict.get("path_len", 0),
+                    sk = msg_dict.get("sender_key", b"")
+                    if isinstance(sk, str):
+                        sk = bytes.fromhex(sk)
+                    bridge.message_queue.push(
+                        QueuedMessage(
+                            sender_key=sk,
+                            txt_type=msg_dict.get("txt_type", 0),
+                            timestamp=msg_dict.get("timestamp", 0),
+                            text=msg_dict.get("text", ""),
+                            is_channel=bool(msg_dict.get("is_channel", False)),
+                            channel_idx=msg_dict.get("channel_idx", 0),
+                            path_len=msg_dict.get("path_len", 0),
+                        )
                     )
-                )
 
         if bridge.get_channel(0) is None:
             bridge.set_channel(0, "Public", DEFAULT_PUBLIC_CHANNEL_SECRET)

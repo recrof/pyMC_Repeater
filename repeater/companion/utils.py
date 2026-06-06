@@ -17,8 +17,8 @@ COMPANION_BRIDGE_SETTING_KEYS = frozenset({"max_contacts", "offline_queue_size"}
 # Settings that must not be applied from config (fixed at pymc_core defaults).
 _COMPANION_IGNORED_BRIDGE_KEYS = frozenset({"max_channels", "adv_type"})
 
-# MeshCore device-info reports max_contacts // 2 capped at 255.
-_DEVICE_INFO_MAX_CONTACTS_CEILING = 510
+# Contact flag bit 0 marks a favourite (protected from forced-trim eviction).
+_CONTACT_FLAG_FAVOURITE = 0x01
 
 
 class CompanionContactCapacityError(Exception):
@@ -92,17 +92,11 @@ def parse_companion_bridge_kwargs(settings: dict) -> Dict[str, int]:
     kwargs: Dict[str, int] = {}
     if "max_contacts" in settings:
         max_contacts = parse_positive_int(settings["max_contacts"], "max_contacts")
-        if max_contacts > _DEVICE_INFO_MAX_CONTACTS_CEILING:
-            logger.warning(
-                "max_contacts=%s exceeds %s; MeshCore device-info will still report at most %s",
-                max_contacts,
-                _DEVICE_INFO_MAX_CONTACTS_CEILING,
-                _DEVICE_INFO_MAX_CONTACTS_CEILING,
-            )
         kwargs["max_contacts"] = max_contacts
     if "offline_queue_size" in settings:
+        # 0 is valid and means "off" (no offline message storage).
         kwargs["offline_queue_size"] = parse_positive_int(
-            settings["offline_queue_size"], "offline_queue_size"
+            settings["offline_queue_size"], "offline_queue_size", minimum=0
         )
     return kwargs
 
@@ -171,6 +165,88 @@ def check_companion_contact_capacity(
         )
 
 
+def select_companion_contacts_to_trim(contacts, max_contacts: int):
+    """Select which persisted contacts to keep/remove to fit ``max_contacts``.
+
+    Mirrors ``ContactStore.add_or_overwrite`` eviction: the oldest non-favourite
+    contacts (by ``lastmod``) are removed first; favourites (flags bit 0) are
+    never evicted.
+
+    Returns:
+        (keep, removed): lists of contact dicts.
+
+    Raises:
+        ValueError: favourites alone exceed ``max_contacts`` (cannot trim).
+    """
+    contacts = list(contacts)
+    if len(contacts) <= max_contacts:
+        return contacts, []
+    favourites = [
+        c for c in contacts if int(c.get("flags", 0)) & _CONTACT_FLAG_FAVOURITE
+    ]
+    if len(favourites) > max_contacts:
+        raise ValueError(
+            f"Cannot trim to max_contacts={max_contacts}: "
+            f"{len(favourites)} favourite contacts cannot be evicted"
+        )
+    non_favourites = [
+        c for c in contacts if not int(c.get("flags", 0)) & _CONTACT_FLAG_FAVOURITE
+    ]
+    # Keep the newest non-favourites by lastmod; evict the oldest.
+    non_favourites.sort(key=lambda c: int(c.get("lastmod", 0)))
+    keep_count = max_contacts - len(favourites)
+    removed = non_favourites[: len(non_favourites) - keep_count]
+    kept_non_favourites = non_favourites[len(non_favourites) - keep_count :]
+    return favourites + kept_non_favourites, removed
+
+
+def trim_companion_contacts_to_fit(
+    sqlite_handler: Any, companion_hash: str, max_contacts: int
+) -> int:
+    """Trim persisted contacts (favourite-aware) down to ``max_contacts``.
+
+    Loads the companion's contacts, evicts the oldest non-favourites per
+    :func:`select_companion_contacts_to_trim`, persists the kept set, and returns
+    the number removed (0 if already within the limit).
+
+    Raises:
+        ValueError: favourites alone exceed ``max_contacts`` (cannot trim).
+        RuntimeError: persisting the trimmed contact list failed.
+    """
+    if sqlite_handler is None:
+        return 0
+    contacts = sqlite_handler.companion_load_contacts(companion_hash)
+    keep, removed = select_companion_contacts_to_trim(contacts, max_contacts)
+    if not removed:
+        return 0
+    if not sqlite_handler.companion_save_contacts(companion_hash, keep):
+        raise RuntimeError(f"Failed to persist trimmed contacts for {companion_hash}")
+    return len(removed)
+
+
+def enforce_companion_contact_capacity(
+    companion_hash: str,
+    max_contacts: int,
+    sqlite_handler: Any,
+    *,
+    trim: bool = False,
+    companion_name: Optional[str] = None,
+) -> int:
+    """Ensure persisted contacts fit ``max_contacts`` at load time.
+
+    With ``trim=False`` (default) this is a guard: it raises
+    :class:`CompanionContactCapacityError` when over capacity. With ``trim=True``
+    (the ``trim_contacts_on_overflow`` policy) it trims favourite-aware to fit,
+    persists, and returns the number of contacts removed.
+    """
+    if not trim:
+        check_companion_contact_capacity(
+            companion_hash, max_contacts, sqlite_handler, companion_name=companion_name
+        )
+        return 0
+    return trim_companion_contacts_to_fit(sqlite_handler, companion_hash, max_contacts)
+
+
 def format_companion_bridge_limits(bridge_kwargs: Dict[str, int]) -> str:
     """Format non-default bridge limits for log lines."""
     if not bridge_kwargs:
@@ -200,6 +276,9 @@ COMPANION_SETTINGS_ALLOWLIST = frozenset(
         "tcp_port",
         "bind_address",
         "tcp_timeout",
+        # Persistent opt-in: trim oldest non-favourite contacts to fit max_contacts
+        # at load instead of refusing to start when over capacity.
+        "trim_contacts_on_overflow",
         *COMPANION_BRIDGE_SETTING_KEYS,
     }
 )

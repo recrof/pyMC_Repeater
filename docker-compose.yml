@@ -1,6 +1,6 @@
 services:
   pymc-repeater:
-    image: ${PYMC_REPEATER_IMAGE:-pymcdev/pymc-repeater:dev}
+    image: ${PYMC_REPEATER_IMAGE:-pymcdev/pymc-repeater:main}
     container_name: pymc-repeater
     restart: unless-stopped
     ports:

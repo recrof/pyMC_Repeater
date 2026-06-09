@@ -360,7 +360,7 @@ cp .env.example .env
    required for your hardware. Please note that your hardware devices might be
    at a different path than those listed in the docker compose file.
 
-By default, the compose file pulls the published `pymcdev/pymc-repeater:dev`
+By default, the compose file pulls the published `pymcdev/pymc-repeater:main`
 image and stores config/data in Docker named volumes. This is the recommended
 default for Portainer and fresh installs because Docker keeps the volume
 ownership compatible with the container user.

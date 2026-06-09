@@ -13,11 +13,9 @@ def test_create_identity_schema_matches_supported_identity_types():
     properties = schema["properties"]
 
     assert properties["type"]["enum"] == ["companion", "room_server"]
-    assert {"node_name", "tcp_port", "bind_address"} <= set(
-        properties["settings"]["properties"]
-    )
+    assert {"node_name", "tcp_port", "bind_address"} <= set(properties["settings"]["properties"])
     assert set(
-        spec["paths"]["/create_identity"]["post"]["requestBody"]["content"][
-            "application/json"
-        ]["examples"]
+        spec["paths"]["/create_identity"]["post"]["requestBody"]["content"]["application/json"][
+            "examples"
+        ]
     ) == {"companion", "room_server"}

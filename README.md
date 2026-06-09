@@ -231,7 +231,7 @@ glass:
 
 ## Policy Engine
 
-Use the policy engine to create Fortinet-style packet management rules from the
+Use the policy engine to create packet management rules from the
 web interface.
 
 ![Policy](docs/config-policy.png)

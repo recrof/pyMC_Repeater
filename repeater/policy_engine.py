@@ -52,8 +52,11 @@ class PolicyEngine:
             )
             self.default_action = "allow"
 
-        self.rules = cfg.get("rules") if isinstance(cfg.get("rules"), list) else []
-        self.objects = cfg.get("objects") if isinstance(cfg.get("objects"), dict) else {}
+        rules = cfg.get("rules")
+        self.rules: list[dict[str, Any]] = rules if isinstance(rules, list) else []
+
+        objects = cfg.get("objects")
+        self.objects: dict[str, Any] = objects if isinstance(objects, dict) else {}
         self._channel_decrypt_cache: dict[int, dict[str, Any]] = {}
         self._inline_channel_secrets = self._collect_inline_rule_channel_secrets(self.rules)
 
@@ -205,6 +208,10 @@ class PolicyEngine:
             channel_info = self._get_channel_decrypt_info(packet)
             return channel_info.get("message_body")
 
+        if field == "channel_sender":
+            channel_info = self._get_channel_decrypt_info(packet)
+            return channel_info.get("sender")
+
         if field == "channel_decryptable":
             channel_info = self._get_channel_decrypt_info(packet)
             return bool(channel_info.get("decryptable", False))
@@ -245,10 +252,14 @@ class PolicyEngine:
         if isinstance(decrypted, dict):
             group_text = decrypted.get("group_text_data", {})
             if isinstance(group_text, dict):
+                sender = group_text.get("sender")
                 text = group_text.get("text")
                 if isinstance(text, str):
+                    if not isinstance(sender, str) or not sender.strip():
+                        sender, text = self._extract_sender_from_message(text)
                     return {
                         "decryptable": True,
+                        "sender": sender,
                         "message_body": text,
                     }
 
@@ -322,14 +333,16 @@ class PolicyEngine:
             if not isinstance(content, str):
                 continue
 
-            _, message_body = self._extract_sender_from_message(content)
+            sender, message_body = self._extract_sender_from_message(content)
             logger.debug(
-                "Channel decrypt: SUCCESS with secret %s, message_body=%r",
+                "Channel decrypt: SUCCESS with secret %s, sender=%r, message_body=%r",
                 secret_preview,
+                sender,
                 message_body[:40] if message_body else "",
             )
             return {
                 "decryptable": True,
+                "sender": sender.rstrip("\x00").rstrip(),
                 "message_body": message_body.rstrip("\x00").rstrip(),
             }
 
@@ -346,6 +359,7 @@ class PolicyEngine:
             )
         return {
             "decryptable": False,
+            "sender": None,
             "message_body": None,
         }
 

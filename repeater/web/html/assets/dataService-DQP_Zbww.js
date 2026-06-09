@@ -1,0 +1,1 @@
+import{t as e}from"./dataService-DrGNzb-u.js";export{e as useDataService};

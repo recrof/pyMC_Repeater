@@ -321,6 +321,52 @@ def test_policy_engine_matches_decrypted_channel_message_body_from_policy_object
     assert decision.action == "drop"
 
 
+def test_policy_engine_matches_decrypted_channel_sender_from_policy_objects():
+    channel_secret = (b"policy-channel-secret" + b"\x00" * 32)[:32].hex()
+    packet = PacketBuilder.create_group_datagram(
+        group_name="ops",
+        local_identity=LocalIdentity(),
+        message="hello mesh from channel",
+        sender_name="Alice",
+        channels_config=[{"name": "ops", "secret": channel_secret}],
+    )
+
+    engine = PolicyEngine(
+        {
+            "enabled": True,
+            "default_action": "allow",
+            "objects": {
+                "channels": {
+                    "ops": {
+                        "secret": channel_secret,
+                    }
+                }
+            },
+            "rules": [
+                {
+                    "id": 304,
+                    "enabled": True,
+                    "if": {
+                        "all": [
+                            {
+                                "field": "channel_sender",
+                                "op": "equals",
+                                "value": "Alice",
+                            }
+                        ]
+                    },
+                    "then": {"action": "drop"},
+                }
+            ],
+        }
+    )
+
+    decision = engine.evaluate(packet, {"payload_type": packet.get_payload_type()})
+
+    assert decision.matched is True
+    assert decision.action == "drop"
+
+
 def test_policy_engine_path_hashes_intersects_normalized_literal_list():
     engine = PolicyEngine(
         {
